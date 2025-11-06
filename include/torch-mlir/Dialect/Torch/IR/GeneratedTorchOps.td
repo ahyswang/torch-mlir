@@ -3742,6 +3742,33 @@ def Torch_AtenMul_TensorOp : Torch_Op<"aten.mul_.Tensor", [
   }];
 }
 
+def Torch_AtenMyAddTensorOp : Torch_Op<"aten.myadd.Tensor", [
+    AllowsTypeRefinement,
+    HasValueSemantics,
+    ReadOnly
+  ]> {
+  let summary = "Generated op for `aten::myadd.Tensor : (Tensor, Tensor, Scalar) -> (Tensor)`";
+  let arguments = (ins
+    AnyTorchTensorType:$self,
+    AnyTorchTensorType:$other,
+    AnyTorchScalarType:$alpha
+  );
+  let results = (outs
+    AnyTorchOptionalTensorType:$result
+  );
+  let hasCustomAssemblyFormat = 1;
+  let extraClassDefinition = [{
+    ParseResult AtenMyAddTensorOp::parse(OpAsmParser &parser, OperationState &result) {
+      return parseDefaultTorchOp(parser, result, 3, 1);
+    }
+    void AtenMyAddTensorOp::print(OpAsmPrinter &printer) {
+      printDefaultTorchOp(printer, *this, 3, 1);
+    }
+  }];
+  let hasFolder = 1;
+  let hasCanonicalizer = 1;
+}
+
 def Torch_AtenAddTensorOp : Torch_Op<"aten.add.Tensor", [
     AllowsTypeRefinement,
     HasValueSemantics,

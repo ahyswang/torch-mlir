@@ -1490,6 +1490,30 @@ naryFolderHelper(ArrayRef<Attribute> operands, Type ty,
 }
 
 //===----------------------------------------------------------------------===//
+// AtenMyAddTensorOp
+//===----------------------------------------------------------------------===//
+void AtenMyAddTensorOp::getCanonicalizationPatterns(RewritePatternSet &patterns,
+                                                  MLIRContext *context) {
+  patterns.add(+[](AtenMyAddTensorOp op, PatternRewriter &rewriter) {
+    return rewrite0DBinaryTensorOp(op, rewriter);
+  });
+}
+
+OpFoldResult AtenMyAddTensorOp::fold(FoldAdaptor adaptor) {
+  auto fpFold = [](llvm::ArrayRef<double> inputs) {
+    assert(inputs.size() == 3);
+    return inputs[0] + (inputs[1] * inputs[2]);
+  };
+
+  auto intFold = [](llvm::ArrayRef<APInt> inputs) {
+    assert(inputs.size() == 3);
+    return inputs[0] + (inputs[1] * inputs[2]);
+  };
+
+  return naryFolderHelper(adaptor.getOperands(), getType(), fpFold, intFold);
+}
+
+//===----------------------------------------------------------------------===//
 // AtenAddTensorOp
 //===----------------------------------------------------------------------===//
 void AtenAddTensorOp::getCanonicalizationPatterns(RewritePatternSet &patterns,

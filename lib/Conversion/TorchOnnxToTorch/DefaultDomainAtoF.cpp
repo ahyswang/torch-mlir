@@ -145,6 +145,21 @@ void mlir::torch::onnx_c::populateDefaultDomainAtoF(
                   return success();
                 });
   // Add became forward compatible with Torch in version 7.
+  patterns.onOp("MyAdd", 7,
+    [](OpBinder binder, ConversionPatternRewriter &rewriter) {
+      Torch::ValueTensorType resultType;
+      Value lhs, rhs;
+      if (binder.tensorOperands(lhs, rhs) ||
+          binder.tensorResultType(resultType))
+        return failure();
+      Value const1 = rewriter.create<Torch::ConstantIntOp>(
+          binder.getLoc(), rewriter.getType<Torch::IntType>(),
+          rewriter.getIntegerAttr(rewriter.getIntegerType(64), 1));
+      rewriter.replaceOpWithNewOp<Torch::AtenMyAddTensorOp>(
+          binder.op, resultType, lhs, rhs, const1);
+      return success();
+    });
+  // Add became forward compatible with Torch in version 7.
   patterns.onOp("Add", 7,
                 [](OpBinder binder, ConversionPatternRewriter &rewriter) {
                   Torch::ValueTensorType resultType;

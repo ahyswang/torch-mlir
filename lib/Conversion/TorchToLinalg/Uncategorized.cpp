@@ -812,6 +812,31 @@ static Value createLinalgPayloadCalculationForElementwiseOp(
     Value cmp = b.create<arith::OrIOp>(loc, lesser, greater);
     return b.create<arith::SelectOp>(loc, cmp, constantZero, gradOutput);
   }
+  if (auto add = dyn_cast<AtenMyAddTensorOp>(op)) {
+    AtenMyAddTensorOp::Adaptor adaptor(operands);
+    Type resultElementType = cast<BaseTensorType>(add.getType()).getDtype();
+    Type dtype = cast<RankedTensorType>(converter->convertType(add.getType()))
+                     .getElementType();
+    Value lhs = convertScalarToDtype(b, loc, payloadArgs[0], dtype,
+                                     /*srcOriginalDtype=*/std::nullopt,
+                                     /*dstOriginalDtype=*/resultElementType);
+    Value rhs = convertScalarToDtype(b, loc, payloadArgs[1], dtype,
+                                     /*srcOriginalDtype=*/std::nullopt,
+                                     /*dstOriginalDtype=*/resultElementType);
+    Value alpha = convertScalarToDtype(b, loc, adaptor.getAlpha(), dtype,
+                                       /*srcOriginalDtype=*/std::nullopt,
+                                       /*dstOriginalDtype=*/resultElementType);
+    if (isa<mlir::FloatType>(dtype)) {
+      Value scaled = b.create<arith::MulFOp>(loc, rhs, alpha);
+      return b.create<arith::AddFOp>(loc, lhs, scaled);
+    } else if (dtype.isInteger(1)) {
+      Value scaled = b.create<arith::MulIOp>(loc, rhs, alpha);
+      return b.create<arith::OrIOp>(loc, lhs, scaled);
+    } else {
+      Value scaled = b.create<arith::MulIOp>(loc, rhs, alpha);
+      return b.create<arith::AddIOp>(loc, lhs, scaled);
+    }
+  }
   if (auto add = dyn_cast<AtenAddTensorOp>(op)) {
     AtenAddTensorOp::Adaptor adaptor(operands);
     Type resultElementType = cast<BaseTensorType>(add.getType()).getDtype();
@@ -1638,7 +1663,7 @@ public:
              AtenFillScalarOp, AtenFillTensorOp, AtenAtanOp, AtenAcosOp,
              AtenAtanhOp, AtenAcoshOp, AtenAsinOp, AtenAsinhOp, AtenRealOp,
              AtenImagOp, AtenDequantizeSelfOp, AtenDequantizeTensorOp,
-             AtenQuantizePerTensorOp, AtenIscloseOp>(op))
+             AtenQuantizePerTensorOp, AtenIscloseOp, AtenMyAddTensorOp>(op))
       return rewriter.notifyMatchFailure(op, "not a supported elementwise op");
 
     if (failed(verifyLinalgCompatibleTypes(op, rewriter)))
@@ -3990,7 +4015,7 @@ void mlir::torch::torch_to_linalg::populateUncategorizedPatternsAndLegality(
       AtenTrilOp, AtenRemainderScalarOp, AtenRemainderTensorOp,
       AtenBitwiseNotOp, AtenRoundOp, AtenFillScalarOp, AtenFillTensorOp,
       AtenRealOp, AtenImagOp, AtenDequantizeSelfOp, AtenDequantizeTensorOp,
-      AtenQuantizePerTensorOp, AtenIscloseOp>();
+      AtenQuantizePerTensorOp, AtenIscloseOp, AtenMyAddTensorOp>();
   patterns.add<ConvertElementwiseOp>(typeConverter, context);
   target.addIllegalOp<AtenNllLossForwardOp>();
   patterns.add<ConvertAtenDetachOp>(typeConverter, context);
