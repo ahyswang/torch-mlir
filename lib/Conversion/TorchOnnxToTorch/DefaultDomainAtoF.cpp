@@ -2332,6 +2332,37 @@ void mlir::torch::onnx_c::populateDefaultDomainAtoF(
         Value scale = operands[1];
         Value zeropoint = operands[2];
 
+        // per-block quantization
+        SmallVector<int64_t> block_axis;
+        SmallVector<int64_t> block_size;
+        
+        if (!binder.s64IntegerArrayAttr(block_axis, "block_axis", {}) &&
+            !binder.s64IntegerArrayAttr(block_size, "block_size", {})) {
+          auto operandTy = cast<Torch::ValueTensorType>(operand.getType());
+          //auto scaleTy = dyn_cast<Torch::ValueTensorType>(scale.getType());
+          auto qTensorTy = getQTorchTypeFromTorchIntType(operandTy);
+          if (!qTensorTy) {
+            return rewriter.notifyMatchFailure(binder.op,
+                                              "unsupported result dtype");
+          }
+
+          int64_t axis;
+          if (binder.s64IntegerAttr(axis, "axis", 1))
+            return failure();
+          Value cstAxis = rewriter.create<Torch::ConstantIntOp>(loc, rewriter.getI64IntegerAttr(axis));
+          Value blockAixsList = createConstantIntList(binder, rewriter, block_axis);
+          Value blockSizeList = createConstantIntList(binder, rewriter, block_size);  
+          Value quatize; 
+
+          quatize = rewriter.create<Torch::Aten_MakePerBlockQuantizedTensorOp>(
+            loc, qTensorTy, operand, scale, zeropoint, cstAxis, blockAixsList, blockSizeList
+          );
+
+          rewriter.replaceOpWithNewOp<Torch::AtenDequantizeSelfOp>(
+              binder.op, resultType, quatize);
+          return success();
+        }
+
         auto operandTy = cast<Torch::ValueTensorType>(operand.getType());
         auto scaleTy = dyn_cast<Torch::ValueTensorType>(scale.getType());
         if (!scaleTy || !scaleTy.hasSizes())

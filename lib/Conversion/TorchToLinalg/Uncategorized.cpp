@@ -25,6 +25,7 @@
 #include "torch-mlir/Dialect/Torch/Utils/TorchUpstream.h"
 #include "torch-mlir/Dialect/Torch/Utils/Utils.h"
 #include "llvm/ADT/APSInt.h"
+#include <llvm-18/llvm/ADT/SmallVector.h>
 #include <numeric>
 #include <string>
 #include <type_traits>
@@ -2500,6 +2501,201 @@ public:
 };
 } // namespace
 
+
+namespace {
+  class ConvertDequantizePerBlock
+      : public OpConversionPattern<AtenDequantizeSelfOp> {
+  public:
+    using OpConversionPattern::OpConversionPattern;
+    LogicalResult
+    matchAndRewrite(AtenDequantizeSelfOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+      auto loc = op.getLoc();
+      auto qoperand = op.getOperand();
+      auto make = qoperand.getDefiningOp<Aten_MakePerBlockQuantizedTensorOp>();
+      if (!make) {
+        return rewriter.notifyMatchFailure(op, "did not find per block qint");
+      }
+  
+      auto converter = getTypeConverter();
+      auto operand = make.getOperand(0);
+      auto scale = make.getScale();
+      auto zeropoint = make.getZeroPoint();
+      auto axis = make.getAxis();
+      auto blockSize = make.getBlockSize();
+      auto blockAxis = make.getBlockAxis();
+  
+      IntegerAttr axisAttr;
+      if (!matchPattern(axis, m_Constant(&axisAttr))) {
+        return failure();
+      }
+      SmallVector<int64_t> blockSizesArray;
+      SmallVector<int64_t> blockAxesArray;
+      if (!matchPattern(blockSize, m_TorchListOfConstantInts(blockSizesArray)) ||
+          !matchPattern(blockAxis, m_TorchListOfConstantInts(blockAxesArray))) {
+        return failure();
+      }
+
+      auto operandDTy = cast<ValueTensorType>(operand.getType()).getDtype();
+      auto zeropointDTy = cast<ValueTensorType>(zeropoint.getType()).getDtype();
+      operand = converter->materializeTargetConversion(
+          rewriter, loc, converter->convertType(operand.getType()), operand);
+      scale = converter->materializeTargetConversion(
+          rewriter, loc, converter->convertType(scale.getType()), scale);
+      zeropoint = converter->materializeTargetConversion(
+          rewriter, loc, converter->convertType(zeropoint.getType()), zeropoint);
+      
+      auto operandType = cast<RankedTensorType>(
+          converter->convertType(operand.getType()));
+      auto resultType = cast<RankedTensorType>(
+          converter->convertType(op->getResult(0).getType()));
+  
+      llvm::SmallVector<Value> dynSizes;
+      for (auto [index, dim] : llvm::enumerate(resultType.getShape())) {
+        if (ShapedType::isDynamic(dim)) {
+          dynSizes.push_back(rewriter.create<tensor::DimOp>(loc, operand, index));
+        }
+      }
+
+      if (blockSizesArray.size() != blockAxesArray.size() || 
+          blockSizesArray.size() != resultType.getRank() || 
+          blockAxesArray.size() != resultType.getRank()) {
+        return failure();
+      }
+
+      // expand input shape according to block sizes
+      SmallVector<int64_t> expandSizes;
+      SmallVector<ReassociationIndices> reassociation(resultType.getRank());
+      int64_t expandIndex = 0;
+      for (size_t i = 0; i < resultType.getRank(); ++i) {
+        if (i >= blockAxesArray.front() && i <= blockAxesArray.back()) {
+          int64_t blockSize = blockSizesArray[i];
+          //int64_t blockAxis = blockAxesArray[i];
+          reassociation[i].push_back(expandIndex++);
+          reassociation[i].push_back(expandIndex++);
+          expandSizes.push_back(resultType.getDimSize(i) / blockSize);
+          expandSizes.push_back(blockSize);
+        } else {
+          reassociation[i].push_back(expandIndex++);
+          expandSizes.push_back(resultType.getDimSize(i));
+        }
+      }
+      auto expandType = RankedTensorType::get(expandSizes, operandType.getElementType());
+      Value expandOperand = rewriter.create<tensor::ExpandShapeOp>(loc, expandType, operand, reassociation).getResult();
+      
+      //operand = collapseOprand;
+
+      // dequantize
+      {
+        llvm::SmallVector<Value> expandDynSizes;
+        for (auto [index, dim] : llvm::enumerate(expandType.getShape())) {
+          if (ShapedType::isDynamic(dim)) {
+            expandDynSizes.push_back(rewriter.create<tensor::DimOp>(loc, expandOperand, index));
+          }
+        }
+        auto dequantType = RankedTensorType::get(
+            expandSizes, resultType.getElementType());
+        
+        llvm::SmallVector<utils::IteratorType> iterators(dequantType.getRank(), utils::IteratorType::parallel);
+        llvm::SmallVector<AffineMap> maps(
+            4, {rewriter.getMultiDimIdentityMap(dequantType.getRank())});
+        SmallVector<AffineExpr> dimExprs;
+        for (size_t i = 0; i <  blockAxesArray.size(); ++i) {
+          dimExprs.push_back(rewriter.getAffineDimExpr(i*2));
+        }
+        auto broadcastMap = AffineMap::get(
+            dequantType.getRank(), /*symbolCount=*/0,
+            dimExprs, rewriter.getContext());
+        maps[1] = broadcastMap;
+        maps[2] = broadcastMap;
+        
+        auto empty = rewriter.create<tensor::EmptyOp>(op.getLoc(), dequantType, expandDynSizes);
+        auto linalgOp = rewriter.create<linalg::GenericOp>(
+          loc, dequantType, ValueRange{expandOperand, scale, zeropoint},
+          ValueRange{empty}, maps, iterators,
+          [&](OpBuilder &b, Location loc, ValueRange args) {
+            Value operand = args[0];
+            Value scale = args[1];
+            Value zeropoint = args[2];
+            if (operandDTy.isUnsignedInteger(8)) {
+              operand = b.create<arith::ExtUIOp>(loc, b.getI32Type(), operand);
+            } else if (operandDTy.isSignedInteger(8)) {
+              operand = b.create<arith::ExtSIOp>(loc, b.getI32Type(), operand);
+            }
+  
+            if (zeropointDTy.isUnsignedInteger(8)) {
+              zeropoint =
+                  b.create<arith::ExtUIOp>(loc, b.getI32Type(), zeropoint);
+            } else if (zeropointDTy.isSignedInteger(8)) {
+              zeropoint =
+                  b.create<arith::ExtSIOp>(loc, b.getI32Type(), zeropoint);
+            } else if (zeropointDTy.isInteger(64)) {
+              zeropoint =
+                  b.create<arith::TruncIOp>(loc, b.getI32Type(), zeropoint);
+              op->emitWarning() << "truncated zero point from 64 to 32 bit";
+            }
+  
+            Value sub = rewriter.create<arith::SubIOp>(loc, operand, zeropoint);
+            Value fp =
+                rewriter.create<arith::SIToFPOp>(loc, args[3].getType(), sub);
+            Value mul = rewriter.create<arith::MulFOp>(loc, fp, scale);
+            b.create<linalg::YieldOp>(loc, mul);
+          });
+          Value collapseOprand = rewriter.create<tensor::CollapseShapeOp>(loc, resultType, linalgOp.getResults()[0], reassociation).getResult();
+          
+          rewriter.replaceOp(op, collapseOprand);
+        return success();
+      }
+
+      llvm::SmallVector<utils::IteratorType> iterators(
+          resultType.getRank(), utils::IteratorType::parallel);
+      llvm::SmallVector<AffineMap> maps(
+          4, {rewriter.getMultiDimIdentityMap(resultType.getRank())});
+      auto broadcastMap = AffineMap::get(
+          resultType.getRank(), /*symbolCount=*/0,
+          {rewriter.getAffineDimExpr(axisAttr.getInt())}, rewriter.getContext());
+      maps[1] = broadcastMap;
+      maps[2] = broadcastMap;
+  
+      auto empty =
+          rewriter.create<tensor::EmptyOp>(op.getLoc(), resultType, dynSizes);
+      auto linalgOp = rewriter.create<linalg::GenericOp>(
+          loc, resultType, ValueRange{operand, scale, zeropoint},
+          ValueRange{empty}, maps, iterators,
+          [&](OpBuilder &b, Location loc, ValueRange args) {
+            Value operand = args[0];
+            Value scale = args[1];
+            Value zeropoint = args[2];
+            if (operandDTy.isUnsignedInteger(8)) {
+              operand = b.create<arith::ExtUIOp>(loc, b.getI32Type(), operand);
+            } else if (operandDTy.isSignedInteger(8)) {
+              operand = b.create<arith::ExtSIOp>(loc, b.getI32Type(), operand);
+            }
+  
+            if (zeropointDTy.isUnsignedInteger(8)) {
+              zeropoint =
+                  b.create<arith::ExtUIOp>(loc, b.getI32Type(), zeropoint);
+            } else if (zeropointDTy.isSignedInteger(8)) {
+              zeropoint =
+                  b.create<arith::ExtSIOp>(loc, b.getI32Type(), zeropoint);
+            } else if (zeropointDTy.isInteger(64)) {
+              zeropoint =
+                  b.create<arith::TruncIOp>(loc, b.getI32Type(), zeropoint);
+              op->emitWarning() << "truncated zero point from 64 to 32 bit";
+            }
+  
+            Value sub = rewriter.create<arith::SubIOp>(loc, operand, zeropoint);
+            Value fp =
+                rewriter.create<arith::SIToFPOp>(loc, args[3].getType(), sub);
+            Value mul = rewriter.create<arith::MulFOp>(loc, fp, scale);
+            b.create<linalg::YieldOp>(loc, mul);
+          });
+      rewriter.replaceOp(op, linalgOp.getResults());
+      return success();
+    }
+  };
+} // namespace
+
 namespace {
 
 template <typename OpTy>
@@ -4035,12 +4231,16 @@ void mlir::torch::torch_to_linalg::populateUncategorizedPatternsAndLegality(
   target.addIllegalOp<TensorStaticInfoCastOp>();
   patterns.add<ConvertAtenIntReprOp>(typeConverter, context);
   target.addIllegalOp<AtenIntReprOp>();
+  patterns.add<ConvertCastEquivalentOp<Aten_MakePerBlockQuantizedTensorOp>>(
+    typeConverter, context);
+  target.addIllegalOp<Aten_MakePerBlockQuantizedTensorOp>();
   patterns.add<ConvertCastEquivalentOp<Aten_MakePerChannelQuantizedTensorOp>>(
       typeConverter, context);
   target.addIllegalOp<Aten_MakePerChannelQuantizedTensorOp>();
   patterns.add<ConvertCastEquivalentOp<Aten_MakePerTensorQuantizedTensorOp>>(
       typeConverter, context);
   target.addIllegalOp<Aten_MakePerTensorQuantizedTensorOp>();
+  patterns.add<ConvertDequantizePerBlock>(typeConverter, context);
   patterns.add<ConvertDequantizePerChannel>(typeConverter, context);
   target.addIllegalOp<AtenGridSamplerOp>();
   patterns.add<ConvertAtenGridSamplerOp>(typeConverter, context);

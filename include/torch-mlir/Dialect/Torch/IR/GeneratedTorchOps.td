@@ -17885,6 +17885,34 @@ def Torch_Aten_MakePerChannelQuantizedTensorOp : Torch_Op<"aten._make_per_channe
   }];
 }
 
+def Torch_Aten_MakePerBlockQuantizedTensorOp : Torch_Op<"aten._make_per_block_quantized_tensor", [
+    AllowsTypeRefinement,
+    HasValueSemantics,
+    ReadOnly
+  ]> {
+  let summary = "Generated op for `aten::_make_per_block_quantized_tensor : (Tensor, Tensor, Tensor, int) -> (Tensor)`";
+  let arguments = (ins
+    AnyTorchTensorType:$self,
+    AnyTorchTensorType:$scale,
+    AnyTorchTensorType:$zero_point,
+    Torch_IntType:$axis,
+    AnyTorchListOfTorchIntType:$block_axis,
+    AnyTorchListOfTorchIntType:$block_size
+  );
+  let results = (outs
+    AnyTorchOptionalTensorType:$result
+  );
+  let hasCustomAssemblyFormat = 1;
+  let extraClassDefinition = [{
+    ParseResult Aten_MakePerBlockQuantizedTensorOp::parse(OpAsmParser &parser, OperationState &result) {
+      return parseDefaultTorchOp(parser, result, 6, 1);
+    }
+    void Aten_MakePerBlockQuantizedTensorOp::print(OpAsmPrinter &printer) {
+      printDefaultTorchOp(printer, *this, 6, 1);
+    }
+  }];
+}
+
 def Torch_Aten_MakePerTensorQuantizedTensorOp : Torch_Op<"aten._make_per_tensor_quantized_tensor", [
     AllowsTypeRefinement,
     HasValueSemantics,
