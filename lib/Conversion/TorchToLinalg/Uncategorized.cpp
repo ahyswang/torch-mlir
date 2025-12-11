@@ -2558,23 +2558,27 @@ namespace {
       }
 
       if (blockSizesArray.size() != blockAxesArray.size() || 
-          blockSizesArray.size() != resultType.getRank() || 
-          blockAxesArray.size() != resultType.getRank()) {
+          blockSizesArray.size() != operandType.getRank() || 
+          blockAxesArray.size() != operandType.getRank()) {
         return failure();
       }
 
       // expand input shape according to block sizes
       SmallVector<int64_t> expandSizes;
+      SmallVector<int64_t> affineDims;
       SmallVector<ReassociationIndices> reassociation(resultType.getRank());
       int64_t expandIndex = 0;
+      int64_t axisIndex = 0;
       for (size_t i = 0; i < resultType.getRank(); ++i) {
-        if (i >= blockAxesArray.front() && i <= blockAxesArray.back()) {
-          int64_t blockSize = blockSizesArray[i];
-          //int64_t blockAxis = blockAxesArray[i];
+        if (axisIndex >= 0 && i < blockAxesArray.size() && blockAxesArray[axisIndex] == i) {
+          int64_t blockSize = blockSizesArray[axisIndex];
+          //int64_t blockAxis = blockAxesArray[axisIndex];
+          affineDims.push_back(expandIndex);
           reassociation[i].push_back(expandIndex++);
           reassociation[i].push_back(expandIndex++);
           expandSizes.push_back(resultType.getDimSize(i) / blockSize);
           expandSizes.push_back(blockSize);
+          axisIndex++;
         } else {
           reassociation[i].push_back(expandIndex++);
           expandSizes.push_back(resultType.getDimSize(i));
@@ -2586,111 +2590,63 @@ namespace {
       //operand = collapseOprand;
 
       // dequantize
-      {
-        llvm::SmallVector<Value> expandDynSizes;
-        for (auto [index, dim] : llvm::enumerate(expandType.getShape())) {
-          if (ShapedType::isDynamic(dim)) {
-            expandDynSizes.push_back(rewriter.create<tensor::DimOp>(loc, expandOperand, index));
-          }
+      llvm::SmallVector<Value> expandDynSizes;
+      for (auto [index, dim] : llvm::enumerate(expandType.getShape())) {
+        if (ShapedType::isDynamic(dim)) {
+          expandDynSizes.push_back(rewriter.create<tensor::DimOp>(loc, expandOperand, index));
         }
-        auto dequantType = RankedTensorType::get(
-            expandSizes, resultType.getElementType());
-        
-        llvm::SmallVector<utils::IteratorType> iterators(dequantType.getRank(), utils::IteratorType::parallel);
-        llvm::SmallVector<AffineMap> maps(
-            4, {rewriter.getMultiDimIdentityMap(dequantType.getRank())});
-        SmallVector<AffineExpr> dimExprs;
-        for (size_t i = 0; i <  blockAxesArray.size(); ++i) {
-          dimExprs.push_back(rewriter.getAffineDimExpr(i*2));
-        }
-        auto broadcastMap = AffineMap::get(
-            dequantType.getRank(), /*symbolCount=*/0,
-            dimExprs, rewriter.getContext());
-        maps[1] = broadcastMap;
-        maps[2] = broadcastMap;
-        
-        auto empty = rewriter.create<tensor::EmptyOp>(op.getLoc(), dequantType, expandDynSizes);
-        auto linalgOp = rewriter.create<linalg::GenericOp>(
-          loc, dequantType, ValueRange{expandOperand, scale, zeropoint},
-          ValueRange{empty}, maps, iterators,
-          [&](OpBuilder &b, Location loc, ValueRange args) {
-            Value operand = args[0];
-            Value scale = args[1];
-            Value zeropoint = args[2];
-            if (operandDTy.isUnsignedInteger(8)) {
-              operand = b.create<arith::ExtUIOp>(loc, b.getI32Type(), operand);
-            } else if (operandDTy.isSignedInteger(8)) {
-              operand = b.create<arith::ExtSIOp>(loc, b.getI32Type(), operand);
-            }
-  
-            if (zeropointDTy.isUnsignedInteger(8)) {
-              zeropoint =
-                  b.create<arith::ExtUIOp>(loc, b.getI32Type(), zeropoint);
-            } else if (zeropointDTy.isSignedInteger(8)) {
-              zeropoint =
-                  b.create<arith::ExtSIOp>(loc, b.getI32Type(), zeropoint);
-            } else if (zeropointDTy.isInteger(64)) {
-              zeropoint =
-                  b.create<arith::TruncIOp>(loc, b.getI32Type(), zeropoint);
-              op->emitWarning() << "truncated zero point from 64 to 32 bit";
-            }
-  
-            Value sub = rewriter.create<arith::SubIOp>(loc, operand, zeropoint);
-            Value fp =
-                rewriter.create<arith::SIToFPOp>(loc, args[3].getType(), sub);
-            Value mul = rewriter.create<arith::MulFOp>(loc, fp, scale);
-            b.create<linalg::YieldOp>(loc, mul);
-          });
-          Value collapseOprand = rewriter.create<tensor::CollapseShapeOp>(loc, resultType, linalgOp.getResults()[0], reassociation).getResult();
-          
-          rewriter.replaceOp(op, collapseOprand);
-        return success();
       }
-
-      llvm::SmallVector<utils::IteratorType> iterators(
-          resultType.getRank(), utils::IteratorType::parallel);
+      auto dequantType = RankedTensorType::get(
+          expandSizes, resultType.getElementType());
+      
+      llvm::SmallVector<utils::IteratorType> iterators(dequantType.getRank(), utils::IteratorType::parallel);
       llvm::SmallVector<AffineMap> maps(
-          4, {rewriter.getMultiDimIdentityMap(resultType.getRank())});
+          4, {rewriter.getMultiDimIdentityMap(dequantType.getRank())});
+      SmallVector<AffineExpr> dimExprs;
+      for (size_t i = 0; i <  blockAxesArray.size(); ++i) {
+        dimExprs.push_back(rewriter.getAffineDimExpr(affineDims[i]));
+      }
       auto broadcastMap = AffineMap::get(
-          resultType.getRank(), /*symbolCount=*/0,
-          {rewriter.getAffineDimExpr(axisAttr.getInt())}, rewriter.getContext());
+          dequantType.getRank(), /*symbolCount=*/0,
+          dimExprs, rewriter.getContext());
       maps[1] = broadcastMap;
       maps[2] = broadcastMap;
-  
-      auto empty =
-          rewriter.create<tensor::EmptyOp>(op.getLoc(), resultType, dynSizes);
+      
+      auto empty = rewriter.create<tensor::EmptyOp>(op.getLoc(), dequantType, expandDynSizes);
       auto linalgOp = rewriter.create<linalg::GenericOp>(
-          loc, resultType, ValueRange{operand, scale, zeropoint},
-          ValueRange{empty}, maps, iterators,
-          [&](OpBuilder &b, Location loc, ValueRange args) {
-            Value operand = args[0];
-            Value scale = args[1];
-            Value zeropoint = args[2];
-            if (operandDTy.isUnsignedInteger(8)) {
-              operand = b.create<arith::ExtUIOp>(loc, b.getI32Type(), operand);
-            } else if (operandDTy.isSignedInteger(8)) {
-              operand = b.create<arith::ExtSIOp>(loc, b.getI32Type(), operand);
-            }
-  
-            if (zeropointDTy.isUnsignedInteger(8)) {
-              zeropoint =
-                  b.create<arith::ExtUIOp>(loc, b.getI32Type(), zeropoint);
-            } else if (zeropointDTy.isSignedInteger(8)) {
-              zeropoint =
-                  b.create<arith::ExtSIOp>(loc, b.getI32Type(), zeropoint);
-            } else if (zeropointDTy.isInteger(64)) {
-              zeropoint =
-                  b.create<arith::TruncIOp>(loc, b.getI32Type(), zeropoint);
-              op->emitWarning() << "truncated zero point from 64 to 32 bit";
-            }
-  
-            Value sub = rewriter.create<arith::SubIOp>(loc, operand, zeropoint);
-            Value fp =
-                rewriter.create<arith::SIToFPOp>(loc, args[3].getType(), sub);
-            Value mul = rewriter.create<arith::MulFOp>(loc, fp, scale);
-            b.create<linalg::YieldOp>(loc, mul);
-          });
-      rewriter.replaceOp(op, linalgOp.getResults());
+        loc, dequantType, ValueRange{expandOperand, scale, zeropoint},
+        ValueRange{empty}, maps, iterators,
+        [&](OpBuilder &b, Location loc, ValueRange args) {
+          Value operand = args[0];
+          Value scale = args[1];
+          Value zeropoint = args[2];
+          if (operandDTy.isUnsignedInteger(8)) {
+            operand = b.create<arith::ExtUIOp>(loc, b.getI32Type(), operand);
+          } else if (operandDTy.isSignedInteger(8)) {
+            operand = b.create<arith::ExtSIOp>(loc, b.getI32Type(), operand);
+          }
+
+          if (zeropointDTy.isUnsignedInteger(8)) {
+            zeropoint =
+                b.create<arith::ExtUIOp>(loc, b.getI32Type(), zeropoint);
+          } else if (zeropointDTy.isSignedInteger(8)) {
+            zeropoint =
+                b.create<arith::ExtSIOp>(loc, b.getI32Type(), zeropoint);
+          } else if (zeropointDTy.isInteger(64)) {
+            zeropoint =
+                b.create<arith::TruncIOp>(loc, b.getI32Type(), zeropoint);
+            op->emitWarning() << "truncated zero point from 64 to 32 bit";
+          }
+
+          Value sub = rewriter.create<arith::SubIOp>(loc, operand, zeropoint);
+          Value fp =
+              rewriter.create<arith::SIToFPOp>(loc, args[3].getType(), sub);
+          Value mul = rewriter.create<arith::MulFOp>(loc, fp, scale);
+          b.create<linalg::YieldOp>(loc, mul);
+        });
+      Value collapseOprand = rewriter.create<tensor::CollapseShapeOp>(loc, resultType, linalgOp.getResults()[0], reassociation).getResult();
+      
+      rewriter.replaceOp(op, collapseOprand);
       return success();
     }
   };

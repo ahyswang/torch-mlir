@@ -260,6 +260,52 @@ void mlir::torch::onnx_c::populateDefaultDomainQtoZ(
         Value scale = operands[1];
         Value zeropoint = operands[2];
 
+        // per-block quantization
+        SmallVector<int64_t> block_axis;
+        SmallVector<int64_t> block_size;
+        
+        if (binder.s64IntegerArrayAttr(block_axis, "block_axis", {}) ||
+            binder.s64IntegerArrayAttr(block_size, "block_size", {})) 
+            return failure();
+        if (block_axis.size() != block_size.size()) {
+          return rewriter.notifyMatchFailure(
+              binder.op, "block axis and block size must have the same length");
+        }
+        
+        if (block_axis.size() > 0 && block_size.size() > 0) { 
+          //auto operandTy = cast<Torch::ValueTensorType>(operand.getType());
+          //auto scaleTy = dyn_cast<Torch::ValueTensorType>(scale.getType());
+          auto qTensorTy = getQTorchTypeFromTorchIntType(resultType);
+          if (!qTensorTy) {
+            return rewriter.notifyMatchFailure(binder.op,
+                                              "unsupported result dtype");
+          }
+          auto torchqTy = Torch::getScalarTypeForType(qTensorTy.getDtype());
+
+          Value tyConst = rewriter.create<Torch::ConstantIntOp>(
+            loc, rewriter.getType<Torch::IntType>(),
+            rewriter.getIntegerAttr(rewriter.getIntegerType(64),
+                                    static_cast<int64_t>(torchqTy)));
+
+          Value blockAixsList = createConstantIntList(binder, rewriter, block_axis);
+          Value blockSizeList = createConstantIntList(binder, rewriter, block_size);  
+          Value quantize; 
+
+          int64_t axis;
+          if (binder.s64IntegerAttr(axis, "axis", 1))
+            return failure();
+
+          Value cstAxis = rewriter.create<Torch::ConstantIntOp>(
+              loc, rewriter.getI64IntegerAttr(axis));
+          quantize = rewriter.create<Torch::AtenQuantizePerBlockOp>(
+              loc, qTensorTy, operand, scale, zeropoint, cstAxis, tyConst, blockAixsList, blockSizeList);
+
+          rewriter.replaceOpWithNewOp<Torch::AtenIntReprOp>(
+            binder.op, resultType, quantize);
+          return success();
+        }
+
+
         auto scaleTy = dyn_cast<Torch::ValueTensorType>(scale.getType());
         if (!scaleTy || !scaleTy.hasSizes())
           return rewriter.notifyMatchFailure(binder.op, "requires known rank");

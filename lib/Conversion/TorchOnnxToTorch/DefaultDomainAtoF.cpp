@@ -2336,8 +2336,15 @@ void mlir::torch::onnx_c::populateDefaultDomainAtoF(
         SmallVector<int64_t> block_axis;
         SmallVector<int64_t> block_size;
         
-        if (!binder.s64IntegerArrayAttr(block_axis, "block_axis", {}) &&
-            !binder.s64IntegerArrayAttr(block_size, "block_size", {})) {
+        if (binder.s64IntegerArrayAttr(block_axis, "block_axis", {}) ||
+            binder.s64IntegerArrayAttr(block_size, "block_size", {})) 
+            return failure();
+        if (block_axis.size() != block_size.size()) {
+          return rewriter.notifyMatchFailure(
+              binder.op, "block axis and block size must have the same length");
+        }
+        
+        if (block_axis.size() > 0 && block_size.size() > 0) { 
           auto operandTy = cast<Torch::ValueTensorType>(operand.getType());
           //auto scaleTy = dyn_cast<Torch::ValueTensorType>(scale.getType());
           auto qTensorTy = getQTorchTypeFromTorchIntType(operandTy);
