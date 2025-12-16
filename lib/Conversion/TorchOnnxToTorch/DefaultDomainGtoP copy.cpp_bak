@@ -2107,12 +2107,11 @@ void mlir::torch::onnx_c::populateDefaultDomainGtoP(
             binder.f32FloatAttr(beta, "beta", 1.0f) ||
             binder.tensorResultType(resultType))
           return failure();
-        
+
         float custom_float_attr;
         int64_t custom_int_attr;
         SmallVector<float> custom_float_list_attr;
         SmallVector<int64_t> custom_int_list_attr;
-        ElementsAttr custom_int_tensor_attr;
         if (binder.f32FloatAttr(custom_float_attr, "custom_float_attr", 1.0f) ||
             binder.s64IntegerAttr(custom_int_attr, "custom_int_attr", 0) ||
             binder.f32FloatArrayAttr(custom_float_list_attr, "custom_float_list_attr", {}) ||
@@ -2121,27 +2120,11 @@ void mlir::torch::onnx_c::populateDefaultDomainGtoP(
         }
         if (custom_float_list_attr.size() > 0 && custom_int_list_attr.size() > 0) {
             auto loc = binder.getLoc();
-            if (binder.denseElementsAttr(custom_int_tensor_attr, "custom_int_tensor_attr")) {
-              return failure();
-            }
-            
-            auto tensorType = llvm::dyn_cast<mlir::RankedTensorType>(custom_int_tensor_attr.getType());
-            auto torchTensorType = mlir::torch::Torch::ValueTensorType::get(
-            rewriter.getContext(), tensorType.getShape(), tensorType.getElementType());
-            Value cstLut = rewriter.create<Torch::ValueTensorLiteralOp>(loc, torchTensorType, custom_int_tensor_attr).getResult();
-
-            //Value cstCustomFloat = rewriter.create<Torch::ConstantFloatOp>(loc, rewriter.getF32FloatAttr(custom_float_attr));
+            Value cstCustomFloat = rewriter.create<Torch::ConstantIntOp>(loc, rewriter.getI64IntegerAttr(custom_float_attr));
             Value cstCustomInt = rewriter.create<Torch::ConstantIntOp>(loc, rewriter.getI64IntegerAttr(custom_int_attr));
-            //Value cstCustomFloatList = createConstantFloatList(binder, rewriter, custom_float_list_attr);
-            Value cstCustomIntList = createConstantIntList(binder, rewriter, custom_int_list_attr);  
-            Value bindA; 
-            auto  bindAType = dyn_cast<Torch::ValueTensorType>(a.getType());
-            if (!bindAType) {
-              return rewriter.notifyMatchFailure(binder.op, "Expected tensor type for operand a");
-            }
-            bindA = rewriter.create<Torch::AtenBindAttrOp>(
-                binder.getLoc(), bindAType, a, cstLut, cstCustomInt, cstCustomIntList);
-            a = bindA;
+            Value blockAixsList = createConstantIntList(binder, rewriter, block_axis);
+            Value blockSizeList = createConstantIntList(binder, rewriter, block_size);  
+            Value quatize; 
         }
         
         Value zero = rewriter.create<Torch::ConstantIntOp>(

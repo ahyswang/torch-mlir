@@ -17764,6 +17764,32 @@ def Torch_AtenQuantizePerChannelOp : Torch_Op<"aten.quantize_per_channel", [
   }];
 }
 
+def Torch_AtenBindAttrOp : Torch_Op<"aten.bind_attr", [
+    AllowsTypeRefinement,
+    HasValueSemantics,
+    ReadOnly
+  ]> {
+  let summary = "Generated op for `aten::bind_attr : (Tensor, Tensor, int, int[]) -> (Tensor)`";
+  let arguments = (ins
+    AnyTorchTensorType:$self,
+    AnyTorchTensorType:$lut,
+    Torch_IntType:$axis,
+    AnyTorchListOfTorchIntType:$block_size
+  );
+  let results = (outs
+    AnyTorchTensorType:$result
+  );
+  let hasCustomAssemblyFormat = 1;
+  let extraClassDefinition = [{
+    ParseResult AtenBindAttrOp::parse(OpAsmParser &parser, OperationState &result) {
+      return parseDefaultTorchOp(parser, result, 4, 1);
+    }
+    void AtenBindAttrOp::print(OpAsmPrinter &printer) {
+      printDefaultTorchOp(printer, *this, 4, 1);
+    }
+  }];
+}  
+
 def Torch_AtenQuantizePerBlockOp : Torch_Op<"aten.quantize_per_block", [
     AllowsTypeRefinement,
     HasValueSemantics,

@@ -383,7 +383,7 @@ struct OpBinder {
     return failure();
   }
 
-  ParseResult denseElementsAttr(ElementsAttr elementsattr,
+  ParseResult denseElementsAttr(ElementsAttr& elementsattr,
                                 StringRef nameSuffix) {
     SmallString<64> name("torch.onnx.");
     name.append(nameSuffix);
