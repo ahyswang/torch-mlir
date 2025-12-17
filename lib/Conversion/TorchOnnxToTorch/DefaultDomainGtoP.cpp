@@ -2107,7 +2107,7 @@ void mlir::torch::onnx_c::populateDefaultDomainGtoP(
             binder.f32FloatAttr(beta, "beta", 1.0f) ||
             binder.tensorResultType(resultType))
           return failure();
-        
+#if 0
         float custom_float_attr;
         int64_t custom_int_attr;
         SmallVector<float> custom_float_list_attr;
@@ -2141,9 +2141,25 @@ void mlir::torch::onnx_c::populateDefaultDomainGtoP(
             }
             bindA = rewriter.create<Torch::AtenBindAttrOp>(
                 binder.getLoc(), bindAType, a, cstLut, cstCustomInt, cstCustomIntList);
+            auto bindADefineiningOp = bindA.getDefiningOp();
+#if 0
+            bindADefineiningOp->setAttr("custom_int_attr", rewriter.getI16IntegerAttr(custom_int_attr));
+            bindADefineiningOp->setAttr("custom_float_attr", rewriter.getF32FloatAttr(custom_float_attr));
+            bindADefineiningOp->setAttr("custom_float_list_attr", rewriter.getF32ArrayAttr(custom_float_list_attr));
+            bindADefineiningOp->setAttr("custom_int_list_attr", rewriter.getI64ArrayAttr(custom_int_list_attr));
+            bindADefineiningOp->setAttr("custom_int_tensor_attr", custom_int_tensor_attr);
+#else 
+            for (auto itAttr = binder.op->getAttrs().begin(); itAttr != binder.op->getAttrs().end(); ++itAttr) {
+              StringRef attrName = itAttr->getName();
+              if (!attrName.starts_with("torch.onnx.custom_")) {
+                continue; // Skip custom attributes
+              }
+              bindADefineiningOp->setAttr(attrName, itAttr->getValue());
+            }         
+#endif 
             a = bindA;
         }
-        
+#endif 
         Value zero = rewriter.create<Torch::ConstantIntOp>(
             binder.getLoc(), rewriter.getType<Torch::IntType>(),
             rewriter.getIntegerAttr(rewriter.getIntegerType(64), 0));

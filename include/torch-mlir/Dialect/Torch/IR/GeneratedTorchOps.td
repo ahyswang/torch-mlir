@@ -17769,12 +17769,9 @@ def Torch_AtenBindAttrOp : Torch_Op<"aten.bind_attr", [
     HasValueSemantics,
     ReadOnly
   ]> {
-  let summary = "Generated op for `aten::bind_attr : (Tensor, Tensor, int, int[]) -> (Tensor)`";
+  let summary = "Generated op for `aten::bind_attr : (Tensor) -> (Tensor)`";
   let arguments = (ins
-    AnyTorchTensorType:$self,
-    AnyTorchTensorType:$lut,
-    Torch_IntType:$axis,
-    AnyTorchListOfTorchIntType:$block_size
+    AnyTorchTensorType:$self
   );
   let results = (outs
     AnyTorchTensorType:$result
@@ -17782,10 +17779,10 @@ def Torch_AtenBindAttrOp : Torch_Op<"aten.bind_attr", [
   let hasCustomAssemblyFormat = 1;
   let extraClassDefinition = [{
     ParseResult AtenBindAttrOp::parse(OpAsmParser &parser, OperationState &result) {
-      return parseDefaultTorchOp(parser, result, 4, 1);
+      return parseDefaultTorchOp(parser, result, 1, 1);
     }
     void AtenBindAttrOp::print(OpAsmPrinter &printer) {
-      printDefaultTorchOp(printer, *this, 4, 1);
+      printDefaultTorchOp(printer, *this, 1, 1);
     }
   }];
 }  
