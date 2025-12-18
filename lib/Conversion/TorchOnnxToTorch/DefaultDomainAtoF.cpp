@@ -2361,8 +2361,26 @@ void mlir::torch::onnx_c::populateDefaultDomainAtoF(
           Value blockSizeList = createConstantIntList(binder, rewriter, block_size);  
           Value quatize; 
 
+          int64_t input_dtype;
+          int64_t scale_dtype;
+          int64_t symmetry;
+          int64_t round_type;
+          int64_t qdq;
+          if (binder.s64IntegerAttr(input_dtype, "input_dtype", 0) || 
+              binder.s64IntegerAttr(scale_dtype, "scale_dtype", 0) ||
+              binder.s64IntegerAttr(symmetry, "symmetry", 0) ||
+              binder.s64IntegerAttr(round_type, "round_type", 0) ||
+              binder.s64IntegerAttr(qdq, "qdq", 0))
+            return failure();
+          Value cstInputDtype = rewriter.create<Torch::ConstantIntOp>(loc, rewriter.getI64IntegerAttr(input_dtype));
+          Value cstScaleDtype = rewriter.create<Torch::ConstantIntOp>(loc, rewriter.getI64IntegerAttr(scale_dtype));
+          Value cstSymmetry = rewriter.create<Torch::ConstantIntOp>(loc, rewriter.getI64IntegerAttr(symmetry));
+          Value cstRoundType = rewriter.create<Torch::ConstantIntOp>(loc, rewriter.getI64IntegerAttr(round_type));
+          Value cstQDQ = rewriter.create<Torch::ConstantIntOp>(loc, rewriter.getI64IntegerAttr(qdq));
+        
           quatize = rewriter.create<Torch::Aten_MakePerBlockQuantizedTensorOp>(
-            loc, qTensorTy, operand, scale, zeropoint, cstAxis, blockAixsList, blockSizeList
+            loc, qTensorTy, operand, scale, zeropoint, cstAxis, blockAixsList, blockSizeList, 
+            cstInputDtype, cstScaleDtype, cstSymmetry, cstRoundType, cstQDQ
           );
 
           rewriter.replaceOpWithNewOp<Torch::AtenDequantizeSelfOp>(

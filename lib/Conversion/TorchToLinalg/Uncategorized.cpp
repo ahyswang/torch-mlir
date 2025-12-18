@@ -2573,6 +2573,13 @@ namespace {
       auto axis = make.getAxis();
       auto blockSize = make.getBlockSize();
       auto blockAxis = make.getBlockAxis();
+
+      auto inputDtype = make.getInputDtype();
+      auto scaleDtype = make.getScaleDtype();
+      auto symmetry = make.getSymmetry();
+      auto roundType = make.getRoundType();
+      auto QDQ = make.getQdq();
+
   
       IntegerAttr axisAttr;
       if (!matchPattern(axis, m_Constant(&axisAttr))) {
@@ -2582,6 +2589,27 @@ namespace {
       SmallVector<int64_t> blockAxesArray;
       if (!matchPattern(blockSize, m_TorchListOfConstantInts(blockSizesArray)) ||
           !matchPattern(blockAxis, m_TorchListOfConstantInts(blockAxesArray))) {
+        return failure();
+      }
+
+      IntegerAttr inputDtypeAttr;
+      if (!matchPattern(inputDtype, m_Constant(&inputDtypeAttr))) {
+        return failure();
+      }
+      IntegerAttr scaleDtypeAttr;
+      if (!matchPattern(scaleDtype, m_Constant(&scaleDtypeAttr))) {
+        return failure();
+      }
+      IntegerAttr symmetryAttr;
+      if (!matchPattern(symmetry, m_Constant(&symmetryAttr))) {
+        return failure();
+      }
+      IntegerAttr roundTypeAttr;
+      if (!matchPattern(roundType, m_Constant(&roundTypeAttr))) {
+        return failure();
+      }
+      IntegerAttr QDQAttr;
+      if (!matchPattern(QDQ, m_Constant(&QDQAttr))) {
         return failure();
       }
 
@@ -2695,6 +2723,12 @@ namespace {
         });
       Value collapseOprand = rewriter.create<tensor::CollapseShapeOp>(loc, resultType, linalgOp.getResults()[0], reassociation).getResult();
       
+      linalgOp->setAttr("input_dtype", inputDtypeAttr);
+      linalgOp->setAttr("scale_dtype", scaleDtypeAttr);
+      linalgOp->setAttr("symmetry", symmetryAttr);
+      linalgOp->setAttr("round_type", roundTypeAttr);
+      linalgOp->setAttr("qdq", QDQAttr);
+
       rewriter.replaceOp(op, collapseOprand);
       return success();
     }

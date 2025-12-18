@@ -17942,14 +17942,20 @@ def Torch_Aten_MakePerBlockQuantizedTensorOp : Torch_Op<"aten._make_per_block_qu
     HasValueSemantics,
     ReadOnly
   ]> {
-  let summary = "Generated op for `aten::_make_per_block_quantized_tensor : (Tensor, Tensor, Tensor, int, int[], int[]) -> (Tensor)`";
+  let summary = "Generated op for `aten::_make_per_block_quantized_tensor : (Tensor, Tensor, Tensor, int, int[], int[], int, int, int, int, int) -> (Tensor)`";
   let arguments = (ins
     AnyTorchTensorType:$self,
     AnyTorchTensorType:$scale,
     AnyTorchTensorType:$zero_point,
     Torch_IntType:$axis,
     AnyTorchListOfTorchIntType:$block_axis,
-    AnyTorchListOfTorchIntType:$block_size
+    AnyTorchListOfTorchIntType:$block_size,
+    // extra attrs to match the aten signature
+    Torch_IntType:$input_dtype,
+    Torch_IntType:$scale_dtype,
+    Torch_IntType:$symmetry,
+    Torch_IntType:$round_type,
+    Torch_IntType:$qdq
   );
   let results = (outs
     AnyTorchOptionalTensorType:$result
@@ -17957,10 +17963,10 @@ def Torch_Aten_MakePerBlockQuantizedTensorOp : Torch_Op<"aten._make_per_block_qu
   let hasCustomAssemblyFormat = 1;
   let extraClassDefinition = [{
     ParseResult Aten_MakePerBlockQuantizedTensorOp::parse(OpAsmParser &parser, OperationState &result) {
-      return parseDefaultTorchOp(parser, result, 6, 1);
+      return parseDefaultTorchOp(parser, result, 11, 1);
     }
     void Aten_MakePerBlockQuantizedTensorOp::print(OpAsmPrinter &printer) {
-      printDefaultTorchOp(printer, *this, 6, 1);
+      printDefaultTorchOp(printer, *this, 11, 1);
     }
   }];
 }
