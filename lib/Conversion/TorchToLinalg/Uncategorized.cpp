@@ -2736,6 +2736,198 @@ namespace {
 } // namespace
 
 namespace {
+  class ConvertQuantizePerBlock
+      : public OpConversionPattern<AtenQuantizePerBlockOp> {
+  public:
+    using OpConversionPattern::OpConversionPattern;
+    LogicalResult
+    matchAndRewrite(AtenQuantizePerBlockOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+      auto loc = op.getLoc();
+      auto converter = getTypeConverter();
+      auto operand = op.getOperand(0);
+      auto scale = op.getScales();
+      auto zeropoint = op.getZeroPoints();
+      auto axis = op.getAxis();
+      auto blockSize = op.getBlockSize();
+      auto blockAxis = op.getBlockAxis();
+
+      auto inputDtype = op.getInputDtype();
+      auto scaleDtype = op.getScaleDtype();
+      auto symmetry = op.getSymmetry();
+      auto roundType = op.getRoundType();
+      auto QDQ = op.getQdq();
+
+  
+      IntegerAttr axisAttr;
+      if (!matchPattern(axis, m_Constant(&axisAttr))) {
+        return failure();
+      }
+      SmallVector<int64_t> blockSizesArray;
+      SmallVector<int64_t> blockAxesArray;
+      if (!matchPattern(blockSize, m_TorchListOfConstantInts(blockSizesArray)) ||
+          !matchPattern(blockAxis, m_TorchListOfConstantInts(blockAxesArray))) {
+        return failure();
+      }
+
+      IntegerAttr inputDtypeAttr;
+      if (!matchPattern(inputDtype, m_Constant(&inputDtypeAttr))) {
+        return failure();
+      }
+      IntegerAttr scaleDtypeAttr;
+      if (!matchPattern(scaleDtype, m_Constant(&scaleDtypeAttr))) {
+        return failure();
+      }
+      IntegerAttr symmetryAttr;
+      if (!matchPattern(symmetry, m_Constant(&symmetryAttr))) {
+        return failure();
+      }
+      IntegerAttr roundTypeAttr;
+      if (!matchPattern(roundType, m_Constant(&roundTypeAttr))) {
+        return failure();
+      }
+      IntegerAttr QDQAttr;
+      if (!matchPattern(QDQ, m_Constant(&QDQAttr))) {
+        return failure();
+      }
+
+      // auto operandDTy = cast<ValueTensorType>(operand.getType()).getDtype();
+      // auto zeropointDTy = cast<ValueTensorType>(zeropoint.getType()).getDtype();
+      operand = converter->materializeTargetConversion(
+          rewriter, loc, converter->convertType(operand.getType()), operand);
+      scale = converter->materializeTargetConversion(
+          rewriter, loc, converter->convertType(scale.getType()), scale);
+      zeropoint = converter->materializeTargetConversion(
+          rewriter, loc, converter->convertType(zeropoint.getType()), zeropoint);
+      
+      auto operandType = cast<RankedTensorType>(
+          converter->convertType(operand.getType()));
+      auto resultType = cast<RankedTensorType>(
+          converter->convertType(op->getResult(0).getType()));
+  
+      llvm::SmallVector<Value> dynSizes;
+      for (auto [index, dim] : llvm::enumerate(resultType.getShape())) {
+        if (ShapedType::isDynamic(dim)) {
+          dynSizes.push_back(rewriter.create<tensor::DimOp>(loc, operand, index));
+        }
+      }
+
+      if (blockSizesArray.size() != blockAxesArray.size() || 
+          blockSizesArray.size() != operandType.getRank() || 
+          blockAxesArray.size() != operandType.getRank()) {
+        return failure();
+      }
+
+      // expand input shape according to block sizes
+      SmallVector<int64_t> expandSizes;
+      SmallVector<int64_t> affineDims;
+      SmallVector<ReassociationIndices> reassociation(resultType.getRank());
+      int64_t expandIndex = 0;
+      int64_t axisIndex = 0;
+      for (size_t i = 0; i < resultType.getRank(); ++i) {
+        if (axisIndex >= 0 && i < blockAxesArray.size() && blockAxesArray[axisIndex] == i) {
+          int64_t blockSize = blockSizesArray[axisIndex];
+          //int64_t blockAxis = blockAxesArray[axisIndex];
+          affineDims.push_back(expandIndex);
+          reassociation[i].push_back(expandIndex++);
+          reassociation[i].push_back(expandIndex++);
+          expandSizes.push_back(resultType.getDimSize(i) / blockSize);
+          expandSizes.push_back(blockSize);
+          axisIndex++;
+        } else {
+          reassociation[i].push_back(expandIndex++);
+          expandSizes.push_back(resultType.getDimSize(i));
+        }
+      }
+      auto expandType = RankedTensorType::get(expandSizes, operandType.getElementType());
+      Value expandOperand = rewriter.create<tensor::ExpandShapeOp>(loc, expandType, operand, reassociation).getResult();
+      
+      //operand = collapseOprand;
+
+      // dequantize
+      llvm::SmallVector<Value> expandDynSizes;
+      for (auto [index, dim] : llvm::enumerate(expandType.getShape())) {
+        if (ShapedType::isDynamic(dim)) {
+          expandDynSizes.push_back(rewriter.create<tensor::DimOp>(loc, expandOperand, index));
+        }
+      }
+      auto dequantType = RankedTensorType::get(
+          expandSizes, resultType.getElementType());
+      
+      llvm::SmallVector<utils::IteratorType> iterators(dequantType.getRank(), utils::IteratorType::parallel);
+      llvm::SmallVector<AffineMap> maps(
+          4, {rewriter.getMultiDimIdentityMap(dequantType.getRank())});
+      SmallVector<AffineExpr> dimExprs;
+      for (size_t i = 0; i <  blockAxesArray.size(); ++i) {
+        dimExprs.push_back(rewriter.getAffineDimExpr(affineDims[i]));
+      }
+      auto broadcastMap = AffineMap::get(
+          dequantType.getRank(), /*symbolCount=*/0,
+          dimExprs, rewriter.getContext());
+      maps[1] = broadcastMap;
+      maps[2] = broadcastMap;
+      
+      auto empty = rewriter.create<tensor::EmptyOp>(op.getLoc(), dequantType, expandDynSizes);
+      auto linalgOp = rewriter.create<linalg::GenericOp>(
+        loc, dequantType, ValueRange{expandOperand, scale, zeropoint},
+        ValueRange{empty}, maps, iterators,
+        [&](OpBuilder &b, Location loc, ValueRange args) {
+          Value value = args[0];
+          Value scale = args[1];
+          Value zp = args[2];
+          Value init = args[3];
+          
+          auto valueTy = value.getType();
+
+          zp = b.create<arith::SIToFPOp>(loc, valueTy, zp);
+          //scale = b.create<arith::TruncFOp>(loc, valueTy, scale);
+
+          value = b.create<arith::DivFOp>(loc, value, scale);
+          value = b.create<math::RoundEvenOp>(loc, value);
+          value = b.create<arith::AddFOp>(loc, value, zp);
+
+          auto destTy = init.getType();
+          auto bitwidth = destTy.getIntOrFloatBitWidth();
+          bool isUnsigned = torch_to_linalg::isUnsignedTorchType(init.getType());
+          APInt min = isUnsigned ? APInt::getMinValue(bitwidth)
+                                : APInt::getSignedMinValue(bitwidth);
+          APInt max = isUnsigned ? APInt::getMaxValue(bitwidth)
+                                : APInt::getSignedMaxValue(bitwidth);
+
+          double minI = isUnsigned ? static_cast<double>(min.getZExtValue())
+                                  : static_cast<double>(min.getSExtValue());
+          double maxI = isUnsigned ? static_cast<double>(max.getZExtValue())
+                                  : static_cast<double>(max.getSExtValue());
+          Value minVal =
+              b.create<arith::ConstantOp>(loc, b.getFloatAttr(valueTy, minI));
+          Value maxVal =
+              b.create<arith::ConstantOp>(loc, b.getFloatAttr(valueTy, maxI));
+          value = b.create<arith::MaximumFOp>(loc, value, minVal);
+          value = b.create<arith::MinimumFOp>(loc, value, maxVal);
+
+          if (isUnsigned) {
+            value = b.create<arith::FPToUIOp>(loc, destTy, value);
+          } else {
+            value = b.create<arith::FPToSIOp>(loc, destTy, value);
+          }
+
+          b.create<linalg::YieldOp>(loc, value);
+        });
+      Value collapseOprand = rewriter.create<tensor::CollapseShapeOp>(loc, resultType, linalgOp.getResults()[0], reassociation).getResult();
+      
+      linalgOp->setAttr("input_dtype", inputDtypeAttr);
+      linalgOp->setAttr("scale_dtype", scaleDtypeAttr);
+      linalgOp->setAttr("symmetry", symmetryAttr);
+      linalgOp->setAttr("round_type", roundTypeAttr);
+      linalgOp->setAttr("qdq", QDQAttr);
+
+      rewriter.replaceOp(op, collapseOprand);
+      return success();
+    }
+  };
+} // namespace
+
+namespace {
 
 template <typename OpTy>
 class ConvertCastEquivalentOp : public OpConversionPattern<OpTy> {
@@ -4295,4 +4487,6 @@ void mlir::torch::torch_to_linalg::populateUncategorizedPatternsAndLegality(
   patterns.add<ConvertOnnxVariantRotaryEmbeddingOp>(typeConverter, context);
   target.addIllegalOp<AtenBindAttrOp>();
   patterns.add<ConvertAtenBindAttrOp>(typeConverter, context);
+  target.addIllegalOp<AtenQuantizePerBlockOp>();
+  patterns.add<ConvertQuantizePerBlock>(typeConverter, context);
 }

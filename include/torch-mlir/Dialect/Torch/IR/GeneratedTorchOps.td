@@ -17792,7 +17792,7 @@ def Torch_AtenQuantizePerBlockOp : Torch_Op<"aten.quantize_per_block", [
     HasValueSemantics,
     ReadOnly
   ]> {
-  let summary = "Generated op for `aten::quantize_per_block : (Tensor, Tensor, Tensor, int, int, int[], int[]) -> (Tensor)`";
+  let summary = "Generated op for `aten::quantize_per_block : (Tensor, Tensor, Tensor, int, int, int[], int[], int, int, int, int, int) -> (Tensor)`";
   let arguments = (ins
     AnyTorchTensorType:$self,
     AnyTorchTensorType:$scales,
@@ -17800,7 +17800,13 @@ def Torch_AtenQuantizePerBlockOp : Torch_Op<"aten.quantize_per_block", [
     Torch_IntType:$axis,
     Torch_IntType:$dtype,
     AnyTorchListOfTorchIntType:$block_axis,
-    AnyTorchListOfTorchIntType:$block_size
+    AnyTorchListOfTorchIntType:$block_size,
+    // extra attrs to match the aten signature
+    Torch_IntType:$input_dtype,
+    Torch_IntType:$scale_dtype,
+    Torch_IntType:$symmetry,
+    Torch_IntType:$round_type,
+    Torch_IntType:$qdq
   );
   let results = (outs
     AnyTorchOptionalTensorType:$result
@@ -17808,10 +17814,10 @@ def Torch_AtenQuantizePerBlockOp : Torch_Op<"aten.quantize_per_block", [
   let hasCustomAssemblyFormat = 1;
   let extraClassDefinition = [{
     ParseResult AtenQuantizePerBlockOp::parse(OpAsmParser &parser, OperationState &result) {
-      return parseDefaultTorchOp(parser, result, 5, 1);
+      return parseDefaultTorchOp(parser, result, 10, 1);
     }
     void AtenQuantizePerBlockOp::print(OpAsmPrinter &printer) {
-      printDefaultTorchOp(printer, *this, 5, 1);
+      printDefaultTorchOp(printer, *this, 10, 1);
     }
   }];
 }

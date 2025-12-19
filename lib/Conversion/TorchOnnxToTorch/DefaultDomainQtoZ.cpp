@@ -294,11 +294,30 @@ void mlir::torch::onnx_c::populateDefaultDomainQtoZ(
           int64_t axis;
           if (binder.s64IntegerAttr(axis, "axis", 1))
             return failure();
-
+            
           Value cstAxis = rewriter.create<Torch::ConstantIntOp>(
               loc, rewriter.getI64IntegerAttr(axis));
+          
+          int64_t input_dtype;
+          int64_t scale_dtype;
+          int64_t symmetry;
+          int64_t round_type;
+          int64_t qdq;
+          if (binder.s64IntegerAttr(input_dtype, "input_dtype", 0) || 
+              binder.s64IntegerAttr(scale_dtype, "scale_dtype", 0) ||
+              binder.s64IntegerAttr(symmetry, "symmetry", 0) ||
+              binder.s64IntegerAttr(round_type, "round_type", 0) ||
+              binder.s64IntegerAttr(qdq, "qdq", 0))
+            return failure();
+          Value cstInputDtype = rewriter.create<Torch::ConstantIntOp>(loc, rewriter.getI64IntegerAttr(input_dtype));
+          Value cstScaleDtype = rewriter.create<Torch::ConstantIntOp>(loc, rewriter.getI64IntegerAttr(scale_dtype));
+          Value cstSymmetry = rewriter.create<Torch::ConstantIntOp>(loc, rewriter.getI64IntegerAttr(symmetry));
+          Value cstRoundType = rewriter.create<Torch::ConstantIntOp>(loc, rewriter.getI64IntegerAttr(round_type));
+          Value cstQDQ = rewriter.create<Torch::ConstantIntOp>(loc, rewriter.getI64IntegerAttr(qdq));
+
           quantize = rewriter.create<Torch::AtenQuantizePerBlockOp>(
-              loc, qTensorTy, operand, scale, zeropoint, cstAxis, tyConst, blockAixsList, blockSizeList);
+              loc, qTensorTy, operand, scale, zeropoint, cstAxis, tyConst, blockAixsList, blockSizeList,
+              cstInputDtype, cstScaleDtype, cstSymmetry, cstRoundType, cstQDQ);
 
           rewriter.replaceOpWithNewOp<Torch::AtenIntReprOp>(
             binder.op, resultType, quantize);
