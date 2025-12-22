@@ -3988,6 +3988,67 @@ private:
 };
 } // namespace
 
+namespace {
+  class ConvertAtenBindAttrOp
+      : public OpConversionPattern<AtenBindAttrOp> {
+  public:
+        using OpConversionPattern::OpConversionPattern;
+    LogicalResult
+    matchAndRewrite(AtenBindAttrOp op, OpAdaptor adaptor,
+                    ConversionPatternRewriter &rewriter) const override {
+        auto loc = op.getLoc();
+        auto operand = op.getOperand();
+        auto converter = getTypeConverter();
+
+        auto operandType = cast<RankedTensorType>(
+          converter->convertType(operand.getType()));
+        auto resultType = cast<RankedTensorType>(
+          converter->convertType(op->getResult(0).getType()));
+
+        operand = converter->materializeTargetConversion(
+          rewriter, loc, converter->convertType(operand.getType()), operand);
+        
+        llvm::SmallVector<Value> dynSizes;
+        for (auto [index, dim] : llvm::enumerate(operandType.getShape())) {
+          if (ShapedType::isDynamic(dim)) {
+            dynSizes.push_back(rewriter.create<tensor::DimOp>(loc, operand, index));
+          }
+        }
+        auto bindType = RankedTensorType::get(
+          resultType.getShape(), resultType.getElementType());
+        auto empty = rewriter.create<tensor::EmptyOp>(op.getLoc(), bindType, dynSizes);
+        
+        llvm::SmallVector<utils::IteratorType> iterators(resultType.getRank(), utils::IteratorType::parallel);
+        llvm::SmallVector<AffineMap> maps(
+          2, {rewriter.getMultiDimIdentityMap(resultType.getRank())});
+        auto linalgOp = rewriter.create<linalg::GenericOp>(
+          loc, resultType, ValueRange{operand},
+          ValueRange{empty}, maps, iterators,
+          [&](OpBuilder &b, Location loc, ValueRange args) {
+            Value operand = args[0];
+            auto elementType = args[0].getType();
+            Value cst0 = b.create<arith::ConstantOp>(loc, elementType, b.getZeroAttr(elementType));
+            Value result;
+            if (elementType.isFloat()) {
+              result = b.create<arith::AddFOp>(loc, operand, cst0);
+            } else if (elementType.isInteger()) {
+              result = b.create<arith::AddIOp>(loc, operand, cst0);
+            } else {
+              op->emitError("Unsupported element type in AtenBindAttrOp");
+            }
+            b.create<linalg::YieldOp>(loc, result);
+          });
+        for (auto itAttr = op->getAttrs().begin(); itAttr != op->getAttrs().end(); ++itAttr) {
+          linalgOp->setAttr(itAttr->getName(), itAttr->getValue());
+        }
+        rewriter.replaceOp(op, linalgOp.getResults());
+        return success();
+    }
+      
+  };
+}
+
+
 void mlir::torch::torch_to_linalg::populateUncategorizedPatternsAndLegality(
     TypeConverter &typeConverter, RewritePatternSet &patterns,
     ConversionTarget &target) {
@@ -4054,4 +4115,6 @@ void mlir::torch::torch_to_linalg::populateUncategorizedPatternsAndLegality(
   patterns.add<ConvertSymConstrainRangeOp>(typeConverter, context);
   target.addIllegalOp<OnnxVariantRotaryEmbeddingOp>();
   patterns.add<ConvertOnnxVariantRotaryEmbeddingOp>(typeConverter, context);
+  target.addIllegalOp<AtenBindAttrOp>();
+  patterns.add<ConvertAtenBindAttrOp>(typeConverter, context);
 }
