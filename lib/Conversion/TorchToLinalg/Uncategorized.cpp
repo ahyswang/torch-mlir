@@ -1485,12 +1485,17 @@ static Value createLinalgPayloadCalculationForElementwiseOp(
     auto outFpTy = payloadArgs[1].getType();
     auto outBw = outFpTy.getIntOrFloatBitWidth();
     auto outIntTy = b.getIntegerType(outBw);
-
+    auto valueBw = valueTy.getIntOrFloatBitWidth(); 
+    
     if (valueTy != outIntTy) {
-      if (torch_to_linalg::isUnsignedTorchType(qtensorTy)) {
-        value = b.create<arith::ExtUIOp>(loc, outIntTy, value);
+      if (valueBw < outBw) {
+        if (torch_to_linalg::isUnsignedTorchType(qtensorTy)) {
+          value = b.create<arith::ExtUIOp>(loc, outIntTy, value);
+        } else {
+          value = b.create<arith::ExtSIOp>(loc, outIntTy, value);
+        }
       } else {
-        value = b.create<arith::ExtSIOp>(loc, outIntTy, value);
+        value = b.create<arith::TruncIOp>(loc, outIntTy, value);
       }
     }
 

@@ -742,10 +742,9 @@ class ContextCache:
     def _sanitize_name(self, name):
         if not name.isidentifier():
             name = "_" + name
-
         # Remove characters that are invalid in MLIR identifier names.
         # https://mlir.llvm.org/docs/LangRef/#identifiers-and-keywords
-        return re.sub("[^\w\.]", "_", name)
+        return re.sub(r"[^\w\.]", "_", name)
 
     def tensor_proto_to_attr(self, tp: onnx.TensorProto) -> Attribute:
         tensor_type = self.tensor_proto_to_builtin_type(tp)
@@ -1168,6 +1167,9 @@ ELEM_TYPE_INLINE_TENSOR_PROTO_CB = {
     ),
     onnx.TensorProto.DataType.UINT64: lambda tp: DenseElementsAttr.get(
         np.asarray(tp.uint64_data, dtype=np.uint64).reshape(tp.dims), signless=False
+    ),
+    onnx.TensorProto.DataType.FLOAT16: lambda tp: DenseElementsAttr.get(
+        np.asarray(tp.int32_data, dtype=np.float16).reshape(tp.dims), signless=False
     ),
     # Intentionally unsupported: STRING
 }
